@@ -1,0 +1,68 @@
+version: '3.8'
+
+services:
+  job-agent:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: job-search-agent
+    restart: unless-stopped
+    environment:
+      # Configuration paths (mount volumes for persistence)
+      - CONFIG_PATH=/app/config
+      - OUTPUT_PATH=/app/output
+
+      # Ollama configuration
+      - OLLAMA_URL=http://ollama:11434
+      - OLLAMA_MODEL=llama3.2
+
+      # Job search APIs (set these in your .env file)
+      - JSEARCH_API_KEY=${JSEARCH_API_KEY:-}
+      - ADZUNA_APP_ID=${ADZUNA_APP_ID:-}
+      - ADZUNA_APP_KEY=${ADZUNA_APP_KEY:-}
+
+      # Application settings
+      - TOP_N_JOBS=${TOP_N_JOBS:-10}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+
+    volumes:
+      # Mount config and output directories
+      - ../config:/app/config:ro
+      - ../output:/app/output
+      - ../logs:/app/logs
+
+    depends_on:
+      - ollama
+
+    # Run health check before starting
+    healthcheck:
+      test: ["CMD", "python", "-c", "from src.config.settings import config; from src.core.agent import JobSearchAgent; agent = JobSearchAgent(); exit(0 if agent.health_check()['overall'] else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+    # Command to run (can be overridden)
+    command: ["python", "-m", "src.main", "--schedule", "${SCHEDULE_TIME:-07:00}"]
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  ollama_data:
+
+networks:
+  default:
+    name: job-agent-network
