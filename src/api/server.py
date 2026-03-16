@@ -1,286 +1,389 @@
-"""REST API server for Job Search Agent"""
+"""REST API server for Job Search Agent (FastAPI + Supabase)"""
 
 import json
 import logging
-from pathlib import Path
-from typing import Dict, List, Optional
-from datetime import datetime
-from flask import Flask, request, jsonify
-from flask_cors import CORS
+from typing import Any, Dict, List, Optional
+
+from fastapi import Depends, FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
+from pydantic import BaseModel, Field
 
 from src.config.settings import config
 from src.core.agent import JobSearchAgent
-from src.models.job import JobApplication, UserProfile
+from src.models.job import Job, UserProfile, JobSearchCriteria
+from src.api.auth import AuthUser, get_current_user
+from src.db import supabase_client as db
+from src.services.pdf_generator import generate_resume_pdf, generate_cover_letter_pdf
 
 logger = logging.getLogger(__name__)
 
-class JobAgentAPI:
-    """REST API for Job Search Agent"""
+# ── Pydantic request models ─────────────────────────────────
 
-    def __init__(self):
-        self.app = Flask(__name__)
-        CORS(self.app)  # Enable CORS for frontend
+class ProfileUpdate(BaseModel):
+    name: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    linkedin: Optional[str] = None
+    location: Optional[str] = None
+    experience: List[str] = Field(default_factory=list)
+    projects: List[str] = Field(default_factory=list)
+    certifications: List[str] = Field(default_factory=list)
+    education: List[str] = Field(default_factory=list)
+    skills: List[str] = Field(default_factory=list)
 
-        self.agent = JobSearchAgent()
-        self.applications_file = config.app.config_path / 'applications.json'
 
-        self.setup_routes()
+class CriteriaUpdate(BaseModel):
+    keywords: List[str] = Field(default_factory=list)
+    locations: List[str] = Field(default_factory=list)
+    experience_levels: List[str] = Field(default_factory=list)
+    job_types: List[str] = Field(default_factory=list)
+    exclude_terms: List[str] = Field(default_factory=list)
 
-    def setup_routes(self):
-        """Setup API routes"""
 
-        @self.app.route('/api/health', methods=['GET'])
-        def health_check():
-            """Health check endpoint"""
-            health = self.agent.health_check()
-            return jsonify(health), 200 if health['overall'] else 503
+class GenerateFromJDRequest(BaseModel):
+    job_description: str
+    title: Optional[str] = None
+    company: Optional[str] = None
+    location: Optional[str] = None
 
-        @self.app.route('/api/profile', methods=['GET', 'POST'])
-        def profile():
-            """Get or update user profile"""
-            if request.method == 'GET':
-                try:
-                    profile = self.agent._load_profile()
-                    if profile:
-                        return jsonify({
-                            'name': profile.name,
-                            'email': profile.email,
-                            'phone': profile.phone,
-                            'linkedin': profile.linkedin,
-                            'location': profile.location,
-                            'experience': profile.experience,
-                            'projects': profile.projects,
-                            'certifications': profile.certifications,
-                            'education': profile.education,
-                            'skills': profile.skills
-                        })
-                    return jsonify({}), 404
-                except Exception as e:
-                    logger.error(f"Failed to load profile: {e}")
-                    return jsonify({'error': 'Failed to load profile'}), 500
 
-            elif request.method == 'POST':
-                try:
-                    data = request.json
-                    if not data:
-                        return jsonify({'error': 'No data provided'}), 400
+class JobStatusUpdate(BaseModel):
+    status: str
+    notes: Optional[str] = None
 
-                    # Create profile object
-                    profile = UserProfile(
-                        name=data.get('name'),
-                        email=data.get('email'),
-                        phone=data.get('phone'),
-                        linkedin=data.get('linkedin'),
-                        location=data.get('location'),
-                        experience=data.get('experience', []),
-                        projects=data.get('projects', []),
-                        certifications=data.get('certifications', []),
-                        education=data.get('education', []),
-                        skills=data.get('skills', [])
-                    )
 
-                    # Save to file
-                    profile_file = config.app.config_path / 'profile.md'
-                    profile_file.write_text(profile.to_markdown(), encoding='utf-8')
+# ── App ──────────────────────────────────────────────────────
 
-                    logger.info("Profile updated successfully")
-                    return jsonify({'message': 'Profile updated successfully'})
+app = FastAPI(
+    title="Job Search AI Agent API",
+    description="AI-powered job search with resume and cover letter generation",
+    version="2.0.0",
+)
 
-                except Exception as e:
-                    logger.error(f"Failed to update profile: {e}")
-                    return jsonify({'error': 'Failed to update profile'}), 500
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[o.strip() for o in config.app.cors_origins.split(",") if o.strip()],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-        @self.app.route('/api/criteria', methods=['GET', 'POST'])
-        def criteria():
-            """Get or update job search criteria"""
-            if request.method == 'GET':
-                try:
-                    criteria = self.agent._load_criteria()
-                    if criteria:
-                        return jsonify({
-                            'keywords': criteria.keywords,
-                            'locations': criteria.locations,
-                            'experience_levels': criteria.experience_levels,
-                            'job_types': criteria.job_types,
-                            'exclude_terms': criteria.exclude_terms
-                        })
-                    return jsonify({}), 404
-                except Exception as e:
-                    logger.error(f"Failed to load criteria: {e}")
-                    return jsonify({'error': 'Failed to load criteria'}), 500
+# Lazy-init agent (only for Ollama / job-search services)
+_agent: Optional[JobSearchAgent] = None
 
-            elif request.method == 'POST':
-                try:
-                    data = request.json
-                    if not data:
-                        return jsonify({'error': 'No data provided'}), 400
 
-                    # Create criteria markdown
-                    criteria_md = f"""# Job search criteria
+def get_agent() -> JobSearchAgent:
+    global _agent
+    if _agent is None:
+        _agent = JobSearchAgent()
+    return _agent
 
-## Roles and focus
-- Roles: {', '.join(data.get('keywords', []))}
-- Keywords: {', '.join(data.get('keywords', []))}
 
-## Experience level
-- Target levels: {', '.join(data.get('experience_levels', []))}
+# ── Routes ───────────────────────────────────────────────────
 
-## Location and remote
-- Locations: {', '.join(data.get('locations', []))}
+@app.get("/api/health")
+def health_check():
+    health = get_agent().health_check()
+    if not health["overall"]:
+        raise HTTPException(status_code=503, detail=health)
+    return health
 
-## Employment types
-- Types: {', '.join(data.get('job_types', []))}
-"""
 
-                    # Save to file
-                    criteria_file = config.app.config_path / 'job-criteria.md'
-                    criteria_file.write_text(criteria_md, encoding='utf-8')
+# ── Profile ──────────────────────────────────────────────────
 
-                    logger.info("Criteria updated successfully")
-                    return jsonify({'message': 'Criteria updated successfully'})
+@app.get("/api/profile")
+def get_profile(user: AuthUser = Depends(get_current_user)):
+    row = db.get_profile(user.id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Profile not found")
+    return {
+        "name": row.get("name"),
+        "email": row.get("email"),
+        "phone": row.get("phone"),
+        "linkedin": row.get("linkedin"),
+        "location": row.get("location"),
+        "experience": row.get("experience", []),
+        "projects": row.get("projects", []),
+        "certifications": row.get("certifications", []),
+        "education": row.get("education", []),
+        "skills": row.get("skills", []),
+    }
 
-                except Exception as e:
-                    logger.error(f"Failed to update criteria: {e}")
-                    return jsonify({'error': 'Failed to update criteria'}), 500
 
-        @self.app.route('/api/search', methods=['POST'])
-        def search():
-            """Trigger job search"""
-            try:
-                result = self.agent.run_search_cycle()
-                if result:
-                    return jsonify({
-                        'message': 'Job search completed',
-                        'output_path': result
-                    })
-                else:
-                    return jsonify({'error': 'Job search failed'}), 500
-            except Exception as e:
-                logger.error(f"Job search failed: {e}")
-                return jsonify({'error': 'Job search failed'}), 500
+@app.post("/api/profile")
+def update_profile(body: ProfileUpdate, user: AuthUser = Depends(get_current_user)):
+    db.upsert_profile(user.id, {
+        "name": body.name,
+        "email": body.email,
+        "phone": body.phone,
+        "linkedin": body.linkedin,
+        "location": body.location,
+        "experience": body.experience or [],
+        "projects": body.projects or [],
+        "certifications": body.certifications or [],
+        "education": body.education or [],
+        "skills": body.skills or [],
+    })
+    return {"message": "Profile saved"}
 
-        @self.app.route('/api/jobs', methods=['GET'])
-        def get_jobs():
-            """Get job results"""
-            try:
-                # Read the latest job list CSV
-                output_dirs = sorted(config.app.output_path.glob('*/'), key=lambda x: x.stat().st_mtime, reverse=True)
-                if not output_dirs:
-                    return jsonify({'jobs': []})
 
-                latest_dir = output_dirs[0]
-                csv_file = latest_dir / 'job-list.csv'
+# ── Search Criteria ──────────────────────────────────────────
 
-                if not csv_file.exists():
-                    return jsonify({'jobs': []})
+@app.get("/api/criteria")
+def get_criteria(user: AuthUser = Depends(get_current_user)):
+    row = db.get_criteria(user.id)
+    if not row:
+        return {
+            "keywords": [],
+            "locations": [],
+            "experience_levels": [],
+            "job_types": [],
+            "exclude_terms": [],
+        }
+    return {
+        "keywords": row.get("keywords", []),
+        "locations": row.get("locations", []),
+        "experience_levels": row.get("experience_levels", []),
+        "job_types": row.get("job_types", []),
+        "exclude_terms": row.get("exclude_terms", []),
+    }
 
-                # Parse CSV
-                import csv
-                jobs = []
-                with open(csv_file, 'r', encoding='utf-8') as f:
-                    reader = csv.DictReader(f)
-                    for row in reader:
-                        # Get application status
-                        applications = self.load_applications()
-                        job_key = f"{row['Title']}|{row['Company']}|{row['URL']}"
-                        status = applications.get(job_key, {}).get('status', 'not_applied')
 
-                        job = {
-                            'title': row['Title'],
-                            'company': row['Company'],
-                            'location': row['Location'],
-                            'url': row['URL'],
-                            'resume_file': row['Resume File'],
-                            'cover_file': row['Cover File'],
-                            'status': status,
-                            'output_dir': str(latest_dir)
-                        }
-                        jobs.append(job)
+@app.post("/api/criteria")
+def update_criteria(body: CriteriaUpdate, user: AuthUser = Depends(get_current_user)):
+    db.upsert_criteria(user.id, {
+        "keywords": body.keywords or [],
+        "locations": body.locations or [],
+        "experience_levels": body.experience_levels or [],
+        "job_types": body.job_types or [],
+        "exclude_terms": body.exclude_terms or [],
+    })
+    return {"message": "Criteria saved"}
 
-                return jsonify({'jobs': jobs})
 
-            except Exception as e:
-                logger.error(f"Failed to get jobs: {e}")
-                return jsonify({'error': 'Failed to get jobs'}), 500
+# ── Jobs ─────────────────────────────────────────────────────
 
-        @self.app.route('/api/applications/<path:job_key>', methods=['POST'])
-        def update_application(job_key):
-            """Update application status"""
-            try:
-                data = request.json
-                if not data or 'status' not in data:
-                    return jsonify({'error': 'Status required'}), 400
+@app.get("/api/jobs")
+def list_jobs(user: AuthUser = Depends(get_current_user)):
+    rows = db.get_jobs(user.id)
+    return {"jobs": rows}
 
-                applications = self.load_applications()
-                applications[job_key] = {
-                    'status': data['status'],
-                    'updated_at': datetime.now().isoformat(),
-                    'notes': data.get('notes', '')
-                }
 
-                self.save_applications(applications)
-                return jsonify({'message': 'Application updated successfully'})
+@app.get("/api/jobs/{job_id}")
+def get_job_detail(job_id: str, user: AuthUser = Depends(get_current_user)):
+    row = db.get_job(user.id, job_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return row
 
-            except Exception as e:
-                logger.error(f"Failed to update application: {e}")
-                return jsonify({'error': 'Failed to update application'}), 500
 
-        @self.app.route('/api/job/<path:job_key>', methods=['GET'])
-        def get_job_details(job_key):
-            """Get job details and documents"""
-            try:
-                # Find the job in recent results
-                output_dirs = sorted(config.app.output_path.glob('*/'), key=lambda x: x.stat().st_mtime, reverse=True)
+@app.patch("/api/jobs/{job_id}")
+def update_job_status(job_id: str, body: JobStatusUpdate, user: AuthUser = Depends(get_current_user)):
+    data: Dict[str, Any] = {"status": body.status}
+    if body.notes is not None:
+        data["notes"] = body.notes
+    updated = db.update_job(user.id, job_id, data)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return {"message": "Job updated"}
 
-                for output_dir in output_dirs[:5]:  # Check last 5 runs
-                    csv_file = output_dir / 'job-list.csv'
-                    if csv_file.exists():
-                        import csv
-                        with open(csv_file, 'r', encoding='utf-8') as f:
-                            reader = csv.DictReader(f)
-                            for row in reader:
-                                current_key = f"{row['Title']}|{row['Company']}|{row['URL']}"
-                                if current_key == job_key:
-                                    # Read resume and cover files
-                                    resume_file = output_dir / row['Resume File']
-                                    cover_file = output_dir / row['Cover File']
 
-                                    resume_content = resume_file.read_text(encoding='utf-8') if resume_file.exists() else ""
-                                    cover_content = cover_file.read_text(encoding='utf-8') if cover_file.exists() else ""
+@app.delete("/api/jobs/{job_id}")
+def delete_job(job_id: str, user: AuthUser = Depends(get_current_user)):
+    db.get_service_client().table("jobs").delete().eq("id", job_id).eq("user_id", user.id).execute()
+    return {"message": "Job deleted"}
 
-                                    return jsonify({
-                                        'title': row['Title'],
-                                        'company': row['Company'],
-                                        'location': row['Location'],
-                                        'url': row['URL'],
-                                        'resume': resume_content,
-                                        'cover_letter': cover_content
-                                    })
 
-                return jsonify({'error': 'Job not found'}), 404
+# ── Helpers ───────────────────────────────────────────────────
 
-            except Exception as e:
-                logger.error(f"Failed to get job details: {e}")
-                return jsonify({'error': 'Failed to get job details'}), 500
+def _profile_from_row(row: dict) -> UserProfile:
+    return UserProfile(
+        name=row.get("name"),
+        email=row.get("email"),
+        phone=row.get("phone"),
+        linkedin=row.get("linkedin"),
+        location=row.get("location"),
+        experience=row.get("experience", []),
+        projects=row.get("projects", []),
+        certifications=row.get("certifications", []),
+        education=row.get("education", []),
+        skills=row.get("skills", []),
+    )
 
-    def load_applications(self) -> Dict[str, Dict]:
-        """Load application tracking data"""
+def _contact_from_row(row: dict) -> dict:
+    return {k: row.get(k) for k in ("name", "email", "phone", "linkedin", "location")}
+
+
+# ── Generate from JD (on-demand) ─────────────────────────────
+
+@app.post("/api/generate-from-jd")
+def generate_from_jd(body: GenerateFromJDRequest, user: AuthUser = Depends(get_current_user)):
+    if not body.job_description.strip():
+        raise HTTPException(status_code=400, detail="job_description is required")
+
+    profile_row = db.get_profile(user.id)
+    if not profile_row:
+        raise HTTPException(status_code=400, detail="Save your profile first.")
+
+    profile = _profile_from_row(profile_row)
+
+    title = (body.title or "").strip() or "Role"
+    company = (body.company or "").strip() or "Company"
+    location = (body.location or "").strip() or ""
+
+    job = Job(
+        title=title,
+        company=company,
+        location=location,
+        description=body.job_description.strip(),
+        url="",
+    )
+
+    resume_data, cover_data = get_agent().doc_generator.generate_structured_application(job, profile)
+    logger.info(f"Resume keys: {list(resume_data.keys()) if resume_data else 'empty'}")
+    logger.info(f"Cover letter keys: {list(cover_data.keys()) if cover_data else 'empty'}, body len: {len(cover_data.get('body', []))}")
+
+    saved = db.upsert_job(user.id, {
+        "title": title,
+        "company": company,
+        "location": location,
+        "description": body.job_description.strip(),
+        "url": "",
+        "source": "manual",
+        "added_by": "user",
+        "resume_text": json.dumps(resume_data),
+        "cover_letter_text": json.dumps(cover_data),
+    })
+
+    return {
+        "id": saved.get("id"),
+        "resume_data": resume_data,
+        "cover_letter_data": cover_data,
+        "title": title,
+        "company": company,
+    }
+
+
+# ── PDF download endpoints ───────────────────────────────────
+
+@app.get("/api/jobs/{job_id}/resume.pdf")
+def download_resume_pdf(job_id: str, user: AuthUser = Depends(get_current_user)):
+    job_row = db.get_job(user.id, job_id)
+    if not job_row:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    raw = job_row.get("resume_text", "")
+    if not raw:
+        raise HTTPException(status_code=404, detail="No resume generated for this job")
+
+    try:
+        resume_data = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        raise HTTPException(status_code=422, detail="Resume data is not in structured format")
+
+    profile_row = db.get_profile(user.id) or {}
+    contact = _contact_from_row(profile_row)
+
+    pdf_bytes = generate_resume_pdf(contact, resume_data)
+    filename = f"resume-{job_row.get('company', 'company').replace(' ', '-')}.pdf"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.get("/api/jobs/{job_id}/cover-letter.pdf")
+def download_cover_letter_pdf(job_id: str, user: AuthUser = Depends(get_current_user)):
+    job_row = db.get_job(user.id, job_id)
+    if not job_row:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    raw = job_row.get("cover_letter_text", "")
+    if not raw:
+        raise HTTPException(status_code=404, detail="No cover letter generated for this job")
+
+    try:
+        cover_data = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        raise HTTPException(status_code=422, detail="Cover letter data is not in structured format")
+
+    profile_row = db.get_profile(user.id) or {}
+    contact = _contact_from_row(profile_row)
+
+    pdf_bytes = generate_cover_letter_pdf(contact, cover_data)
+    filename = f"cover-letter-{job_row.get('company', 'company').replace(' ', '-')}.pdf"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+# ── Search (agent-powered) ──────────────────────────────────
+
+@app.post("/api/search")
+def search(user: AuthUser = Depends(get_current_user)):
+    criteria_row = db.get_criteria(user.id)
+    if not criteria_row:
+        raise HTTPException(status_code=400, detail="Set search criteria first")
+
+    profile_row = db.get_profile(user.id)
+    if not profile_row:
+        raise HTTPException(status_code=400, detail="Set profile first")
+
+    criteria = JobSearchCriteria(
+        keywords=criteria_row.get("keywords", ["software engineer"]),
+        locations=criteria_row.get("locations", ["remote"]),
+        experience_levels=criteria_row.get("experience_levels", ["entry"]),
+        job_types=criteria_row.get("job_types", ["full-time"]),
+        exclude_terms=criteria_row.get("exclude_terms", []),
+    )
+
+    profile = _profile_from_row(profile_row)
+
+    agent = get_agent()
+
+    jobs = agent.job_search.search_jobs(criteria)
+    if not jobs:
+        return {"message": "No jobs found", "count": 0}
+
+    top_jobs = agent.job_ranker.rank_jobs(
+        jobs, criteria.keywords, config.app.top_n_jobs
+    )
+
+    stored = 0
+    for j in top_jobs:
         try:
-            if self.applications_file.exists():
-                return json.loads(self.applications_file.read_text(encoding='utf-8'))
-            return {}
+            resume, cover = agent.doc_generator.generate_application(j, profile)
         except Exception as e:
-            logger.error(f"Failed to load applications: {e}")
-            return {}
+            logger.error(f"Doc generation failed for {j.title}: {e}")
+            resume, cover = "", ""
 
-    def save_applications(self, applications: Dict[str, Dict]):
-        """Save application tracking data"""
-        try:
-            self.applications_file.write_text(json.dumps(applications, indent=2), encoding='utf-8')
-        except Exception as e:
-            logger.error(f"Failed to save applications: {e}")
+        db.upsert_job(user.id, {
+            "title": j.title,
+            "company": j.company,
+            "location": j.location,
+            "description": j.description,
+            "url": j.url,
+            "posted_date": j.posted_date,
+            "salary_range": j.salary_range,
+            "job_type": j.job_type,
+            "source": j.source,
+            "added_by": "agent",
+            "resume_text": resume,
+            "cover_letter_text": cover,
+        })
+        stored += 1
 
-    def run(self, host='0.0.0.0', port=8000, debug=False):
-        """Run the API server"""
-        logger.info(f"Starting Job Agent API on {host}:{port}")
-        self.app.run(host=host, port=port, debug=debug)
+    return {"message": f"Found and processed {stored} jobs", "count": stored}
+
+
+# ── Run ──────────────────────────────────────────────────────
+
+def run(host: str = "0.0.0.0", port: int = 8000, debug: bool = False):
+    import os, uvicorn
+    port = int(os.getenv("PORT", str(port)))
+    logger.info(f"Starting Job Agent API on {host}:{port}")
+    uvicorn.run("src.api.server:app", host=host, port=port, reload=debug)

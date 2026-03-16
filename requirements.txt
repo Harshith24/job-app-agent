@@ -2,8 +2,10 @@ requests>=2.31.0
 schedule>=1.2.0
 python-dotenv>=1.0.0
 tenacity>=8.0.0
-flask>=2.3.0
-flask-cors>=4.0.0
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+supabase>=2.0.0
+fpdf2>=2.8.0
 
 # Development dependencies (optional)
 pytest>=7.0.0

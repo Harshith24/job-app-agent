@@ -10,7 +10,7 @@ from datetime import datetime
 
 from src.config.settings import config
 from src.core.agent import JobSearchAgent
-from src.api.server import JobAgentAPI
+from src.api.server import run as run_api
 
 logger = logging.getLogger(__name__)
 
@@ -180,8 +180,7 @@ Examples:
 
     # Run API server
     if args.api:
-        api = JobAgentAPI()
-        api.run(port=args.port, debug=args.debug)
+        run_api(host="0.0.0.0", port=args.port, debug=args.debug)
         return
 
     # Run CLI app

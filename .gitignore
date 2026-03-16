@@ -1,6 +1,7 @@
 # Environment and secrets
 .env
 .env.local
+.env.example
 *.pem
 
 # Output (generated resumes, covers, CSV)
@@ -25,3 +26,7 @@ env/
 # Logs
 *.log
 npm-debug.log*
+
+steps.txt
+DESIGN_AND_QUESTIONS.md
+setup.sh

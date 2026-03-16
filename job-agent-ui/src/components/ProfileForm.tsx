@@ -5,7 +5,7 @@ import { useForm, useFieldArray } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { Plus, Trash2, Save, Loader2 } from 'lucide-react';
-import { ProfileFormData } from '@/types';
+import { ProfileFormData, UserProfile } from '@/types';
 import { apiClient, handleApiError } from '@/lib/api';
 
 const profileSchema = z.object({
@@ -14,14 +14,34 @@ const profileSchema = z.object({
   phone: z.string().optional(),
   linkedin: z.string().url().optional().or(z.literal('')),
   location: z.string().optional(),
-  experience: z.array(z.string()).min(0),
-  projects: z.array(z.string()).min(0),
-  certifications: z.array(z.string()).min(0),
-  education: z.array(z.string()).min(0),
-  skills: z.array(z.string()).min(0),
+  experience: z.array(z.object({ value: z.string() })).min(0),
+  projects: z.array(z.object({ value: z.string() })).min(0),
+  certifications: z.array(z.object({ value: z.string() })).min(0),
+  education: z.array(z.object({ value: z.string() })).min(0),
+  skills: z.array(z.object({ value: z.string() })).min(0),
 });
 
-// Form uses ProfileFormData type from types/index.ts
+function _transformProfileForForm(profile: UserProfile): ProfileFormData {
+  return {
+    ...profile,
+    experience: (profile.experience || []).map(val => ({ value: val })),
+    projects: (profile.projects || []).map(val => ({ value: val })),
+    certifications: (profile.certifications || []).map(val => ({ value: val })),
+    education: (profile.education || []).map(val => ({ value: val })),
+    skills: (profile.skills || []).map(val => ({ value: val })),
+  };
+}
+
+function _transformFormToProfile(formData: ProfileFormData): UserProfile {
+  return {
+    ...formData,
+    experience: formData.experience.map(item => item.value),
+    projects: formData.projects.map(item => item.value),
+    certifications: formData.certifications.map(item => item.value),
+    education: formData.education.map(item => item.value),
+    skills: formData.skills.map(item => item.value),
+  };
+}
 
 export function ProfileForm() {
   const [loading, setLoading] = useState(false);
@@ -31,34 +51,52 @@ export function ProfileForm() {
   const { register, control, handleSubmit, reset, formState: { errors } } = useForm<ProfileFormData>({
     resolver: zodResolver(profileSchema),
     defaultValues: {
-      experience: [''],
-      projects: [''],
-      certifications: [''],
-      education: [''],
-      skills: [''],
-    }
+      experience: [],
+      projects: [],
+      certifications: [],
+      education: [],
+      skills: [],
+    },
   });
 
-  // @ts-ignore - TypeScript issues with react-hook-form useFieldArray
   const experienceFields = useFieldArray({ control, name: 'experience' });
-  // @ts-ignore
   const projectFields = useFieldArray({ control, name: 'projects' });
-  // @ts-ignore
   const certificationFields = useFieldArray({ control, name: 'certifications' });
-  // @ts-ignore
   const educationFields = useFieldArray({ control, name: 'education' });
-  // @ts-ignore
   const skillFields = useFieldArray({ control, name: 'skills' });
 
   useEffect(() => {
-    loadProfile();
+    const cachedProfile = localStorage.getItem('profile_cache');
+    if (cachedProfile) {
+      try {
+        const parsed = JSON.parse(cachedProfile);
+        reset(_transformProfileForForm(parsed));
+        // Still load in background to refresh cache, but don't show loading state
+        refreshProfile();
+      } catch (e) {
+        loadProfile();
+      }
+    } else {
+      loadProfile();
+    }
   }, []);
+
+  const refreshProfile = async () => {
+    try {
+      const profile = await apiClient.getProfile();
+      localStorage.setItem('profile_cache', JSON.stringify(profile));
+      reset(_transformProfileForForm(profile));
+    } catch (error) {
+      console.error('Failed to refresh profile:', error);
+    }
+  };
 
   const loadProfile = async () => {
     setLoading(true);
     try {
       const profile = await apiClient.getProfile();
-      reset(profile);
+      localStorage.setItem('profile_cache', JSON.stringify(profile));
+      reset(_transformProfileForForm(profile));
     } catch (error) {
       console.error('Failed to load profile:', error);
       setMessage({ type: 'error', text: handleApiError(error) });
@@ -71,8 +109,10 @@ export function ProfileForm() {
     setSaving(true);
     setMessage(null);
     try {
-      await apiClient.updateProfile(data);
-      setMessage({ type: 'success', text: 'Profile saved successfully!' });
+      const profileToSave = _transformFormToProfile(data);
+      await apiClient.updateProfile(profileToSave);
+      localStorage.setItem('profile_cache', JSON.stringify(profileToSave));
+      setMessage({ type: 'success', text: 'Profile saved.' });
     } catch (error) {
       console.error('Failed to save profile:', error);
       setMessage({ type: 'error', text: handleApiError(error) });
@@ -81,162 +121,118 @@ export function ProfileForm() {
     }
   };
 
-  const addField = (fields: any[], append: (value: string) => void) => {
-    append('');
-  };
-
-  const removeField = (fields: any[], index: number, remove: (index: number) => void) => {
-    if (fields.length > 1) {
-      remove(index);
-    }
-  };
-
   if (loading) {
     return (
-      <div className="flex justify-center items-center py-12">
-        <Loader2 className="h-8 w-8 animate-spin text-blue-600" />
-        <span className="ml-2 text-gray-600">Loading profile...</span>
+      <div className="flex justify-center items-center py-16">
+        <Loader2 className="w-8 h-8 animate-spin text-[var(--color-accent)]" />
+        <span className="ml-3 text-[var(--color-muted)]">Loading profile…</span>
       </div>
     );
   }
 
   return (
-    <div className="max-w-4xl mx-auto">
-      <div className="bg-white shadow rounded-lg p-6">
-        <h2 className="text-2xl font-bold text-gray-900 mb-6">Professional Profile</h2>
+    <div className="card p-6 sm:p-8">
+      <h2 className="text-lg font-semibold text-[var(--color-text)] mb-6">Professional profile</h2>
 
-        {message && (
-          <div className={`mb-6 p-4 rounded-md ${message.type === 'success' ? 'bg-green-50 text-green-800' : 'bg-red-50 text-red-800'}`}>
-            {message.text}
-          </div>
-        )}
+      {message && (
+        <div
+          className={`mb-6 p-4 rounded-[var(--radius)] text-sm ${
+            message.type === 'success'
+              ? 'bg-[var(--color-accent-muted)] text-[var(--color-accent-hover)] border border-[var(--color-accent)]/20'
+              : 'bg-red-50 text-red-700 border border-red-100'
+          }`}
+        >
+          {message.text}
+        </div>
+      )}
 
-        <form onSubmit={handleSubmit(onSubmit)} className="space-y-6">
-          {/* Contact Information */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <div>
-              <label className="block text-sm font-medium text-gray-700">Full Name</label>
-              <input
-                {...register('name')}
-                className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500"
-                placeholder="John Doe"
-              />
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium text-gray-700">Email</label>
-              <input
-                {...register('email')}
-                type="email"
-                className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500"
-                placeholder="john@example.com"
-              />
-              {errors.email && <p className="mt-1 text-sm text-red-600">{errors.email.message}</p>}
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium text-gray-700">Phone</label>
-              <input
-                {...register('phone')}
-                className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500"
-                placeholder="+1 (555) 123-4567"
-              />
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium text-gray-700">LinkedIn URL</label>
-              <input
-                {...register('linkedin')}
-                className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500"
-                placeholder="https://linkedin.com/in/johndoe"
-              />
-              {errors.linkedin && <p className="mt-1 text-sm text-red-600">{errors.linkedin.message}</p>}
-            </div>
-          </div>
-
+      <form onSubmit={handleSubmit(onSubmit)} className="space-y-6">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div>
-            <label className="block text-sm font-medium text-gray-700">Location</label>
-            <input
-              {...register('location')}
-              className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500"
-              placeholder="San Francisco, CA"
-            />
+            <label className="block text-sm font-medium text-[var(--color-text)] mb-1">Full name</label>
+            <input {...register('name')} className="input mt-1" placeholder="Jane Doe" />
           </div>
-
-          {/* Dynamic Fields */}
-          <FieldArray
-            title="Work Experience"
-            fields={experienceFields.fields}
-            register={register}
-            name="experience"
-            placeholder="Senior Software Engineer at Tech Corp (2020-Present) - Led development of AI-powered job search platform..."
-            onAdd={() => addField(experienceFields.fields, experienceFields.append)}
-            onRemove={(index) => removeField(experienceFields.fields, index, experienceFields.remove)}
-          />
-
-          <FieldArray
-            title="Projects"
-            fields={projectFields.fields}
-            register={register}
-            name="projects"
-            placeholder="Job Search AI Agent - Built an AI-powered job search platform using Python, Ollama, and Next.js..."
-            onAdd={() => addField(projectFields.fields, projectFields.append)}
-            onRemove={(index) => removeField(projectFields.fields, index, projectFields.remove)}
-          />
-
-          <FieldArray
-            title="Certifications"
-            fields={certificationFields.fields}
-            register={register}
-            name="certifications"
-            placeholder="AWS Certified Solutions Architect - Amazon Web Services (2023)"
-            onAdd={() => addField(certificationFields.fields, certificationFields.append)}
-            onRemove={(index) => removeField(certificationFields.fields, index, certificationFields.remove)}
-          />
-
-          <FieldArray
-            title="Education"
-            fields={educationFields.fields}
-            register={register}
-            name="education"
-            placeholder="Bachelor of Science in Computer Science - University Name (2016-2020)"
-            onAdd={() => addField(educationFields.fields, educationFields.append)}
-            onRemove={(index) => removeField(educationFields.fields, index, educationFields.remove)}
-          />
-
-          <FieldArray
-            title="Skills"
-            fields={skillFields.fields}
-            register={register}
-            name="skills"
-            placeholder="Python, React, Node.js, AWS, Docker, Kubernetes"
-            onAdd={() => addField(skillFields.fields, skillFields.append)}
-            onRemove={(index) => removeField(skillFields.fields, index, skillFields.remove)}
-          />
-
-          <div className="flex justify-end">
-            <button
-              type="submit"
-              disabled={saving}
-              className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50"
-            >
-              {saving ? (
-                <Loader2 className="h-4 w-4 animate-spin mr-2" />
-              ) : (
-                <Save className="h-4 w-4 mr-2" />
-              )}
-              {saving ? 'Saving...' : 'Save Profile'}
-            </button>
+          <div>
+            <label className="block text-sm font-medium text-[var(--color-text)] mb-1">Email</label>
+            <input {...register('email')} type="email" className="input mt-1" placeholder="jane@example.com" />
+            {errors.email && <p className="mt-1 text-sm text-red-600">{errors.email.message}</p>}
           </div>
-        </form>
-      </div>
+          <div>
+            <label className="block text-sm font-medium text-[var(--color-text)] mb-1">Phone</label>
+            <input {...register('phone')} className="input mt-1" placeholder="+1 555 000 0000" />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-[var(--color-text)] mb-1">LinkedIn</label>
+            <input {...register('linkedin')} className="input mt-1" placeholder="https://linkedin.com/in/janedoe" />
+            {errors.linkedin && <p className="mt-1 text-sm text-red-600">{errors.linkedin.message}</p>}
+          </div>
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium text-[var(--color-text)] mb-1">Location</label>
+          <input {...register('location')} className="input" placeholder="San Francisco, CA" />
+        </div>
+
+        <FieldSection
+          title="Work experience"
+          fields={experienceFields.fields}
+          register={register}
+          name="experience"
+          placeholder="Senior Engineer at Acme (2020–Present) — Led …"
+          onAdd={() => experienceFields.append({ value: '' })}
+          onRemove={(i) => experienceFields.remove(i)}
+        />
+        <FieldSection
+          title="Projects"
+          fields={projectFields.fields}
+          register={register}
+          name="projects"
+          placeholder="Job Search Agent — Python, Ollama, Next.js"
+          onAdd={() => projectFields.append({ value: '' })}
+          onRemove={(i) => projectFields.remove(i)}
+        />
+        <FieldSection
+          title="Certifications"
+          fields={certificationFields.fields}
+          register={register}
+          name="certifications"
+          placeholder="AWS Solutions Architect (2023)"
+          onAdd={() => certificationFields.append({ value: '' })}
+          onRemove={(i) => certificationFields.remove(i)}
+        />
+        <FieldSection
+          title="Education"
+          fields={educationFields.fields}
+          register={register}
+          name="education"
+          placeholder="B.S. Computer Science — University (2016–2020)"
+          onAdd={() => educationFields.append({ value: '' })}
+          onRemove={(i) => educationFields.remove(i)}
+        />
+        <FieldSection
+          title="Skills"
+          fields={skillFields.fields}
+          register={register}
+          name="skills"
+          placeholder="Python, React, AWS, Docker"
+          onAdd={() => skillFields.append({ value: '' })}
+          onRemove={(i) => skillFields.remove(i)}
+        />
+
+        <div className="flex justify-end pt-2">
+          <button type="submit" disabled={saving} className="btn-primary">
+            {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+            {saving ? 'Saving…' : 'Save profile'}
+          </button>
+        </div>
+      </form>
     </div>
   );
 }
 
-interface FieldArrayProps {
+interface FieldSectionProps {
   title: string;
-  fields: any[];
+  fields: { id: string, value?: string }[];
   register: any;
   name: string;
   placeholder: string;
@@ -244,36 +240,34 @@ interface FieldArrayProps {
   onRemove: (index: number) => void;
 }
 
-function FieldArray({ title, fields, register, name, placeholder, onAdd, onRemove }: FieldArrayProps) {
+function FieldSection({ title, fields, register, name, placeholder, onAdd, onRemove }: FieldSectionProps) {
   return (
     <div>
       <div className="flex items-center justify-between mb-2">
-        <h3 className="text-lg font-medium text-gray-900">{title}</h3>
-        <button
-          type="button"
-          onClick={onAdd}
-          className="inline-flex items-center px-3 py-1 border border-gray-300 rounded-md text-sm font-medium text-gray-700 bg-white hover:bg-gray-50"
-        >
-          <Plus className="h-4 w-4 mr-1" />
+        <h3 className="text-sm font-medium text-[var(--color-text)]">{title}</h3>
+        <button type="button" onClick={onAdd} className="btn-secondary text-sm py-1.5 px-2">
+          <Plus className="w-4 h-4" />
           Add
         </button>
       </div>
       <div className="space-y-2">
         {fields.map((field, index) => (
-          <div key={field.id} className="flex items-center space-x-2">
+          <div key={field.id} className="flex gap-2">
             <textarea
-              {...register(`${name}.${index}`)}
-              className="flex-1 rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500"
+              {...register(`${name}.${index}.value`)}
+              className="input flex-1 min-h-[72px] resize-y"
               placeholder={placeholder}
               rows={2}
+              defaultValue={field.value}
             />
-            {fields.length > 1 && (
+            {fields.length > 0 && (
               <button
                 type="button"
                 onClick={() => onRemove(index)}
-                className="inline-flex items-center p-2 border border-gray-300 rounded-md text-gray-400 hover:text-red-600 hover:border-red-300"
+                className="btn-secondary p-2 text-[var(--color-muted)] hover:text-red-600 shrink-0"
+                aria-label="Remove"
               >
-                <Trash2 className="h-4 w-4" />
+                <Trash2 className="w-4 h-4" />
               </button>
             )}
           </div>

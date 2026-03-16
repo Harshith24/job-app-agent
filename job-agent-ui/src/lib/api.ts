@@ -1,95 +1,101 @@
-import axios, { AxiosResponse } from 'axios';
-import { UserProfile, JobSearchCriteria, Job, JobDetails, HealthStatus } from '@/types';
+import axios from 'axios';
+import { supabase } from '@/lib/supabase';
+import {
+  UserProfile,
+  JobSearchCriteria,
+  JobRow,
+  HealthStatus,
+  GenerateFromJDRequest,
+  GenerateFromJDResponse,
+} from '@/types';
 
-// Configure axios defaults
-axios.defaults.baseURL = 'http://localhost:8000/api';
+axios.defaults.baseURL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api';
 
-// API Response types
-interface ApiResponse<T> {
-  data?: T;
-  error?: string;
-  message?: string;
-}
+// Attach Supabase access token to every request
+axios.interceptors.request.use(async (cfg) => {
+  const { data: { session } } = await supabase.auth.getSession();
+  if (session?.access_token) {
+    cfg.headers.Authorization = `Bearer ${session.access_token}`;
+  }
+  return cfg;
+});
 
-// API Client class
 export class ApiClient {
   private static instance: ApiClient;
-
-  public static getInstance(): ApiClient {
-    if (!ApiClient.instance) {
-      ApiClient.instance = new ApiClient();
-    }
+  static getInstance(): ApiClient {
+    if (!ApiClient.instance) ApiClient.instance = new ApiClient();
     return ApiClient.instance;
   }
 
-  // Health check
   async healthCheck(): Promise<HealthStatus> {
-    const response = await axios.get<HealthStatus>('/health');
-    return response.data;
+    return (await axios.get<HealthStatus>('/health')).data;
   }
 
-  // Profile management
+  // Profile
   async getProfile(): Promise<UserProfile> {
-    const response = await axios.get<UserProfile>('/profile');
-    return response.data;
+    return (await axios.get<UserProfile>('/profile')).data;
   }
 
   async updateProfile(profile: UserProfile): Promise<{ message: string }> {
-    const response = await axios.post<{ message: string }>('/profile', profile);
-    return response.data;
+    return (await axios.post<{ message: string }>('/profile', profile)).data;
   }
 
-  // Search criteria management
+  // Criteria
   async getCriteria(): Promise<JobSearchCriteria> {
-    const response = await axios.get<JobSearchCriteria>('/criteria');
-    return response.data;
+    return (await axios.get<JobSearchCriteria>('/criteria')).data;
   }
 
   async updateCriteria(criteria: JobSearchCriteria): Promise<{ message: string }> {
-    const response = await axios.post<{ message: string }>('/criteria', criteria);
-    return response.data;
+    return (await axios.post<{ message: string }>('/criteria', criteria)).data;
   }
 
-  // Job search
-  async searchJobs(): Promise<{ message: string; output_path: string }> {
-    const response = await axios.post<{ message: string; output_path: string }>('/search');
-    return response.data;
+  // Jobs
+  async getJobs(): Promise<{ jobs: JobRow[] }> {
+    return (await axios.get<{ jobs: JobRow[] }>('/jobs')).data;
   }
 
-  // Job management
-  async getJobs(): Promise<{ jobs: Job[] }> {
-    const response = await axios.get<{ jobs: Job[] }>('/jobs');
-    return response.data;
+  async getJobDetail(jobId: string): Promise<JobRow> {
+    return (await axios.get<JobRow>(`/jobs/${jobId}`)).data;
   }
 
-  async getJobDetails(jobKey: string): Promise<JobDetails> {
-    const response = await axios.get<JobDetails>(`/job/${encodeURIComponent(jobKey)}`);
-    return response.data;
+  async updateJobStatus(jobId: string, status: string, notes?: string): Promise<{ message: string }> {
+    return (await axios.patch<{ message: string }>(`/jobs/${jobId}`, { status, notes })).data;
   }
 
-  async updateApplicationStatus(jobKey: string, status: string, notes?: string): Promise<{ message: string }> {
-    const response = await axios.post<{ message: string }>(`/applications/${encodeURIComponent(jobKey)}`, {
-      status,
-      notes
-    });
-    return response.data;
+  async deleteJob(jobId: string): Promise<{ message: string }> {
+    return (await axios.delete<{ message: string }>(`/jobs/${jobId}`)).data;
+  }
+
+  // Search
+  async searchJobs(): Promise<{ message: string; count: number }> {
+    return (await axios.post<{ message: string; count: number }>('/search')).data;
+  }
+
+  // Generate from JD
+  async generateFromJobDescription(body: GenerateFromJDRequest): Promise<GenerateFromJDResponse> {
+    return (await axios.post<GenerateFromJDResponse>('/generate-from-jd', body)).data;
+  }
+
+  // PDF downloads
+  async downloadResumePdf(jobId: string): Promise<Blob> {
+    const res = await axios.get(`/jobs/${jobId}/resume.pdf`, { responseType: 'blob' });
+    return res.data;
+  }
+
+  async downloadCoverLetterPdf(jobId: string): Promise<Blob> {
+    const res = await axios.get(`/jobs/${jobId}/cover-letter.pdf`, { responseType: 'blob' });
+    return res.data;
   }
 }
 
-// Export singleton instance
 export const apiClient = ApiClient.getInstance();
 
-// Error handling utility
-export function handleApiError(error: any): string {
-  if (error.response) {
-    // Server responded with error status
-    const data = error.response.data;
-    return data.error || data.message || `Server error: ${error.response.status}`;
-  } else if (error.request) {
-    // Network error
-    return 'Network error - please check if the backend is running';
-  } else {
-    // Other error
-    return error.message || 'An unexpected error occurred';
+export function handleApiError(error: unknown): string {
+  if (axios.isAxiosError(error)) {
+    const data = error.response?.data;
+    if (data) return data.detail || data.error || data.message || `Error ${error.response?.status}`;
+    return 'Network error — check if the backend is running';
   }
+  if (error instanceof Error) return error.message;
+  return 'An unexpected error occurred';
 }

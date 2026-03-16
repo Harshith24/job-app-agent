@@ -31,11 +31,22 @@ class AppConfig:
 
     # Service settings
     max_retries: int = int(os.getenv('MAX_RETRIES', '3'))
-    request_timeout: int = int(os.getenv('REQUEST_TIMEOUT', '30'))
+    request_timeout: int = int(os.getenv('REQUEST_TIMEOUT', '120'))
+
+    # Supabase
+    supabase_url: str = os.getenv('SUPABASE_URL', '')
+    supabase_anon_key: str = os.getenv('SUPABASE_ANON_KEY', '')
+    supabase_service_role_key: str = os.getenv('SUPABASE_SERVICE_ROLE_KEY', '')
+
+    # CORS — comma-separated origins (used by server.py)
+    cors_origins: str = os.getenv(
+        'CORS_ORIGINS',
+        'http://localhost:3000,http://127.0.0.1:3000',
+    )
 
     # Logging
     log_level: str = os.getenv('LOG_LEVEL', 'INFO')
-    log_file: str = os.getenv('LOG_FILE', 'job_agent.log')
+    log_file: str = os.getenv('LOG_FILE', '')
 
 @dataclass
 class ServiceHealth:
@@ -54,13 +65,16 @@ class Config:
 
     def _setup_logging(self):
         """Configure logging"""
+        handlers: list[logging.Handler] = [logging.StreamHandler()]
+        if self.app.log_file:
+            try:
+                handlers.append(logging.FileHandler(self.app.log_file))
+            except OSError:
+                pass
         logging.basicConfig(
             level=getattr(logging, self.app.log_level.upper()),
             format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-            handlers=[
-                logging.FileHandler(self.app.log_file),
-                logging.StreamHandler()
-            ]
+            handlers=handlers,
         )
 
     def get_logger(self, name: str) -> logging.Logger:

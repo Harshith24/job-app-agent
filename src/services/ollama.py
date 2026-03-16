@@ -60,7 +60,7 @@ class OllamaClient:
             response_text = result.get('response', '').strip()
 
             duration = time.time() - start_time
-            self.logger.info(".2f")
+            self.logger.info(f"Ollama response in {duration:.2f}s")
 
             if not response_text:
                 raise OllamaError("Empty response from Ollama")
@@ -99,7 +99,8 @@ class JobRanker:
             self.logger.warning(f"Ollama ranking failed, falling back to keyword ranking: {e}")
 
         # Fallback to keyword-based ranking
-        scores = self._keyword_ranking(jobs, keywords)
+        keywords_list = criteria if isinstance(criteria, list) else [criteria]
+        scores = self._keyword_ranking(jobs, keywords_list)
         sorted_jobs = sorted(jobs, key=lambda j: scores.get(j, 0), reverse=True)
         ranked_jobs = sorted_jobs[:top_n]
         self.logger.info(f"Keyword ranked {len(ranked_jobs)} jobs")
@@ -113,11 +114,12 @@ class JobRanker:
             desc += f" - {job.description[:300]}..." if job.description else ""
             job_descriptions.append(desc)
 
+        criteria_str = ", ".join(criteria) if isinstance(criteria, list) else str(criteria)
         prompt = f"""
 You are a job search assistant. Based on the following job search criteria, rank these jobs by relevance.
 
 CRITERIA:
-{criteria}
+{criteria_str}
 
 JOBS TO RANK:
 {chr(10).join(job_descriptions)}
@@ -171,23 +173,42 @@ class DocumentGenerator:
         self.ollama = ollama_client
         self.logger = config.get_logger(f"{__name__}.{self.__class__.__name__}")
 
-    def generate_application(self, job, user_profile) -> tuple[str, str]:
-        """Generate resume and cover letter for a job"""
-        try:
-            resume = self._generate_resume(job, user_profile)
-            cover_letter = self._generate_cover_letter(job, user_profile)
+    # ── Legacy text-based generation (used by CLI agent) ──
 
+    def generate_application(self, job, user_profile) -> tuple[str, str]:
+        """Generate resume and cover letter as plain text."""
+        try:
+            resume = self._generate_resume_text(job, user_profile)
+            cover_letter = self._generate_cover_letter_text(job, user_profile)
             self.logger.info(f"Generated documents for: {job.title} at {job.company}")
             return resume, cover_letter
-
         except Exception as e:
             self.logger.error(f"Failed to generate documents for {job.title}: {e}")
             return "", ""
 
-    def _generate_resume(self, job, user_profile) -> str:
-        """Generate tailored resume"""
-        prompt = f"""
-You are a professional resume writer. Create a tailored resume based on the candidate's profile and the specific job requirements.
+    # ── Structured generation (used by API for PDF) ──
+
+    def generate_structured_application(self, job, user_profile) -> tuple[dict, dict]:
+        """Generate resume and cover letter as structured dicts for PDF."""
+        try:
+            resume_data = self._generate_resume_json(job, user_profile)
+        except Exception as e:
+            self.logger.error(f"Resume generation failed for {job.title}: {e}")
+            resume_data = self._fallback_resume(user_profile)
+
+        try:
+            cover_data = self._generate_cover_letter_json(job, user_profile)
+        except Exception as e:
+            self.logger.error(f"Cover letter generation failed for {job.title}: {e}")
+            cover_data = self._fallback_cover()
+
+        self.logger.info(f"Generated structured docs for: {job.title} at {job.company}")
+        return resume_data, cover_data
+
+    # ── Resume (structured JSON) ──
+
+    def _generate_resume_json(self, job, user_profile) -> dict:
+        prompt = f"""You are a professional resume writer. Create a tailored 1-page resume.
 
 CANDIDATE PROFILE:
 {user_profile.to_markdown()}
@@ -198,15 +219,152 @@ Company: {job.company}
 Location: {job.location}
 Description: {job.description}
 
-Create a professional resume in Markdown format that highlights relevant experience, skills, and achievements that match this job. Keep it concise (1 page worth) and focus on the most relevant qualifications.
-"""
+Output ONLY a valid JSON object (no markdown fences, no commentary) with this structure:
+{{
+  "summary": "2-3 sentence professional summary tailored to this role",
+  "experience": [
+    {{
+      "title": "Job Title",
+      "company": "Company Name",
+      "duration": "Start - End",
+      "bullets": ["Achievement or responsibility 1", "Achievement 2"]
+    }}
+  ],
+  "education": [
+    {{
+      "degree": "Degree Name",
+      "school": "School Name",
+      "year": "Year"
+    }}
+  ],
+  "skills": ["Skill 1", "Skill 2", "Skill 3"],
+  "projects": [
+    {{
+      "name": "Project Name",
+      "description": "Brief description"
+    }}
+  ],
+  "certifications": ["Certification 1"]
+}}
+
+RULES:
+- Use ONLY the candidate's actual data — do NOT fabricate experience or credentials
+- Tailor bullets and summary to emphasise qualifications relevant to THIS job
+- Keep content concise — it must fit on one printed page
+- Output valid JSON only"""
+
+        raw = self.ollama.generate(prompt, max_tokens=2000, temperature=0.3)
+        return self._parse_json(raw, "resume", user_profile)
+
+    # ── Cover letter (structured JSON) ──
+
+    def _generate_cover_letter_json(self, job, user_profile) -> dict:
+        prompt = f"""You are a professional cover letter writer.
+
+CANDIDATE PROFILE:
+{user_profile.to_markdown()}
+
+JOB DETAILS:
+Title: {job.title}
+Company: {job.company}
+Location: {job.location}
+Description: {job.description}
+
+Output ONLY a valid JSON object (no markdown fences, no commentary):
+{{
+  "greeting": "Dear Hiring Manager,",
+  "body": [
+    "First paragraph — express interest in the role and company.",
+    "Second paragraph — highlight relevant experience and skills.",
+    "Third paragraph — closing statement and call to action."
+  ],
+  "closing": "Sincerely,"
+}}
+
+RULES:
+- Reference the candidate's real skills and experience
+- Keep it to 3-4 paragraphs
+- Output valid JSON only"""
+
+        raw = self.ollama.generate(prompt, max_tokens=1200, temperature=0.4)
+        return self._parse_json(raw, "cover_letter", user_profile)
+
+    # ── JSON parsing with fallback ──
+
+    def _parse_json(self, text: str, doc_type: str, user_profile=None) -> dict:
+        import json, re
+
+        self.logger.debug(f"Raw LLM {doc_type} output ({len(text)} chars): {text[:300]}")
+
+        # 1) Direct parse
+        try:
+            parsed = json.loads(text)
+            self.logger.info(f"Parsed {doc_type} JSON directly (keys: {list(parsed.keys()) if isinstance(parsed, dict) else 'not-dict'})")
+            return parsed
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+        # 2) Extract from markdown code fence
+        m = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", text, re.DOTALL)
+        if m:
+            try:
+                parsed = json.loads(m.group(1))
+                self.logger.info(f"Parsed {doc_type} JSON from code fence")
+                return parsed
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        # 3) Extract first { … } block
+        start = text.find("{")
+        end = text.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            try:
+                parsed = json.loads(text[start : end + 1])
+                self.logger.info(f"Parsed {doc_type} JSON from brace extraction")
+                return parsed
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        self.logger.warning(f"Could not parse LLM {doc_type} output as JSON — using fallback. Raw: {text[:500]}")
+        if doc_type == "resume":
+            return self._fallback_resume(user_profile)
+        return self._fallback_cover()
+
+    def _fallback_resume(self, profile) -> dict:
+        if profile is None:
+            return {"summary": "", "experience": [], "education": [], "skills": [], "projects": [], "certifications": []}
+        return {
+            "summary": "",
+            "experience": [str(e) for e in (profile.experience or [])],
+            "education": [str(e) for e in (profile.education or [])],
+            "skills": list(profile.skills or []),
+            "projects": [str(p) for p in (profile.projects or [])],
+            "certifications": list(profile.certifications or []),
+        }
+
+    def _fallback_cover(self) -> dict:
+        return {"greeting": "Dear Hiring Manager,", "body": [], "closing": "Sincerely,"}
+
+    # ── Legacy text helpers (kept for CLI agent) ──
+
+    def _generate_resume_text(self, job, user_profile) -> str:
+        prompt = f"""You are a professional resume writer. Create a tailored resume.
+
+CANDIDATE PROFILE:
+{user_profile.to_markdown()}
+
+JOB DETAILS:
+Title: {job.title}
+Company: {job.company}
+Location: {job.location}
+Description: {job.description}
+
+Create a professional resume in Markdown format. Keep it concise (1 page) and focus on relevant qualifications."""
 
         return self.ollama.generate(prompt, max_tokens=1500, temperature=0.3)
 
-    def _generate_cover_letter(self, job, user_profile) -> str:
-        """Generate tailored cover letter"""
-        prompt = f"""
-You are a professional cover letter writer. Create a compelling cover letter based on the candidate's profile and the specific job.
+    def _generate_cover_letter_text(self, job, user_profile) -> str:
+        prompt = f"""You are a professional cover letter writer.
 
 CANDIDATE PROFILE:
 {user_profile.to_markdown()}
@@ -217,7 +375,6 @@ Company: {job.company}
 Location: {job.location}
 Description: {job.description}
 
-Write a professional cover letter in Markdown format that explains why the candidate is interested in this role and company, and how their experience makes them a great fit. Keep it to 3-4 paragraphs.
-"""
+Write a professional cover letter (3-4 paragraphs) in Markdown format."""
 
         return self.ollama.generate(prompt, max_tokens=1000, temperature=0.4)
