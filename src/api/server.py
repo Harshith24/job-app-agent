@@ -15,6 +15,7 @@ from src.models.job import Job, UserProfile, JobSearchCriteria
 from src.api.auth import AuthUser, get_current_user
 from src.db import supabase_client as db
 from src.services.pdf_generator import generate_resume_pdf, generate_cover_letter_pdf
+from src.services.agent_runner import get_runner
 
 logger = logging.getLogger(__name__)
 
@@ -321,7 +322,7 @@ def download_cover_letter_pdf(job_id: str, user: AuthUser = Depends(get_current_
     )
 
 
-# ── Search (agent-powered) ──────────────────────────────────
+# ── Search (triggers agent for this user) ─────────────────
 
 @app.post("/api/search")
 def search(user: AuthUser = Depends(get_current_user)):
@@ -333,51 +334,52 @@ def search(user: AuthUser = Depends(get_current_user)):
     if not profile_row:
         raise HTTPException(status_code=400, detail="Set profile first")
 
-    criteria = JobSearchCriteria(
-        keywords=criteria_row.get("keywords", ["software engineer"]),
-        locations=criteria_row.get("locations", ["remote"]),
-        experience_levels=criteria_row.get("experience_levels", ["entry"]),
-        job_types=criteria_row.get("job_types", ["full-time"]),
-        exclude_terms=criteria_row.get("exclude_terms", []),
-    )
+    runner = get_runner()
+    runner.run_once_for_user(user.id)
 
-    profile = _profile_from_row(profile_row)
+    return {
+        "message": "Agent search started — jobs will appear as they are scored and stored.",
+        "count": 0,
+    }
 
-    agent = get_agent()
 
-    jobs = agent.job_search.search_jobs(criteria)
-    if not jobs:
-        return {"message": "No jobs found", "count": 0}
+# ── Agent control ─────────────────────────────────────────
 
-    top_jobs = agent.job_ranker.rank_jobs(
-        jobs, criteria.keywords, config.app.top_n_jobs
-    )
+@app.post("/api/agent/start")
+def agent_start(user: AuthUser = Depends(get_current_user)):
+    runner = get_runner()
+    runner.start()
+    return {"message": "Background agent started", **runner.status()}
 
-    stored = 0
-    for j in top_jobs:
-        try:
-            resume, cover = agent.doc_generator.generate_application(j, profile)
-        except Exception as e:
-            logger.error(f"Doc generation failed for {j.title}: {e}")
-            resume, cover = "", ""
 
-        db.upsert_job(user.id, {
-            "title": j.title,
-            "company": j.company,
-            "location": j.location,
-            "description": j.description,
-            "url": j.url,
-            "posted_date": j.posted_date,
-            "salary_range": j.salary_range,
-            "job_type": j.job_type,
-            "source": j.source,
-            "added_by": "agent",
-            "resume_text": resume,
-            "cover_letter_text": cover,
-        })
-        stored += 1
+@app.post("/api/agent/stop")
+def agent_stop(user: AuthUser = Depends(get_current_user)):
+    runner = get_runner()
+    runner.stop()
+    return {"message": "Background agent stop requested", **runner.status()}
 
-    return {"message": f"Found and processed {stored} jobs", "count": stored}
+
+@app.get("/api/agent/status")
+def agent_status(user: AuthUser = Depends(get_current_user)):
+    runner = get_runner()
+    last_run = db.get_latest_agent_run(user.id)
+    return {
+        **runner.status(),
+        "last_run": last_run,
+    }
+
+
+# ── Jobs (with filtering) ────────────────────────────────
+
+@app.get("/api/jobs/filtered")
+def list_jobs_filtered(
+    added_by: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    user: AuthUser = Depends(get_current_user),
+):
+    rows = db.get_jobs_filtered(user.id, added_by=added_by, date_from=date_from, date_to=date_to)
+    return {"jobs": rows}
 
 
 # ── Run ──────────────────────────────────────────────────────

@@ -5,11 +5,10 @@ import { useAuth } from '@/context/AuthContext';
 import { AuthForm } from '@/components/AuthForm';
 import { ProfileForm } from '@/components/ProfileForm';
 import { CriteriaForm } from '@/components/CriteriaForm';
-import { JobSearch } from '@/components/JobSearch';
 import { JobList } from '@/components/JobList';
 import { UploadJD } from '@/components/UploadJD';
 import { Tabs } from '@/components/ui/Tabs';
-import { User, Search, FileInput, ListTodo, Sparkles, LogOut, Loader2 } from 'lucide-react';
+import { User, Search, FileInput, ListTodo, LogOut, Loader2 } from 'lucide-react';
 
 export default function Home() {
   const { user, loading, signOut } = useAuth();

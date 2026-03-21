@@ -56,7 +56,7 @@ export function AuthForm() {
                 type="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                className="input pl-10"
+                className="input !pl-10"
                 placeholder="you@example.com"
                 required
               />
@@ -70,7 +70,7 @@ export function AuthForm() {
                 type="password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                className="input pl-10"
+                className="input !pl-10"
                 placeholder="At least 6 characters"
                 required
                 minLength={6}

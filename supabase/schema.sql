@@ -61,6 +61,21 @@ create table public.jobs (
   updated_at       timestamptz default now()
 );
 
+-- 4. Agent runs (log each background-agent cycle per user)
+create table public.agent_runs (
+  id           uuid default gen_random_uuid() primary key,
+  user_id      uuid references auth.users(id) on delete cascade not null,
+  started_at   timestamptz default now(),
+  finished_at  timestamptz,
+  status       text not null default 'running'
+                 check (status in ('running','completed','failed')),
+  jobs_found   int default 0,
+  jobs_stored  int default 0,
+  error        text
+);
+
+create index idx_agent_runs_user on public.agent_runs (user_id, started_at desc);
+
 -- Indexes
 create index idx_jobs_user_id    on public.jobs (user_id);
 create index idx_jobs_created_at on public.jobs (created_at desc);
@@ -148,3 +163,15 @@ create policy "Users can update own jobs"
 
 create policy "Users can delete own jobs"
   on public.jobs for delete using (auth.uid() = user_id);
+
+-- Agent runs: read own rows (insert/update done by service role)
+alter table public.agent_runs enable row level security;
+
+create policy "Users can view own agent runs"
+  on public.agent_runs for select using (auth.uid() = user_id);
+
+create policy "Service can insert agent runs"
+  on public.agent_runs for insert with check (true);
+
+create policy "Service can update agent runs"
+  on public.agent_runs for update using (true);

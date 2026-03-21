@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { ExternalLink, FileText, Download, Eye, Loader2, CheckCircle, Clock, XCircle, Trash2, X, Building2, MapPin } from 'lucide-react';
+import { ExternalLink, Download, Eye, Loader2, CheckCircle, Clock, XCircle, Trash2, Building2, MapPin, Bot, User, Filter } from 'lucide-react';
 import { JobRow } from '@/types';
 import { apiClient, handleApiError } from '@/lib/api';
 import { Modal } from '@/components/ui/Modal';
@@ -17,6 +17,10 @@ export function JobList() {
   const [selected, setSelected] = useState<JobRow | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [updatingId, setUpdatingId] = useState<string | null>(null);
+
+  // Filters
+  const [sourceFilter, setSourceFilter] = useState<string>('all');
+  const [dateFilter, setDateFilter] = useState<string>('');
 
   useEffect(() => { loadJobs(); }, []);
 
@@ -99,6 +103,20 @@ export function JobList() {
     return <Clock className="w-3.5 h-3.5" />;
   };
 
+  // Apply client-side filters
+  const filteredJobs = jobs.filter(job => {
+    if (sourceFilter === 'agent' && job.added_by !== 'agent') return false;
+    if (sourceFilter === 'user' && job.added_by !== 'user') return false;
+    if (dateFilter) {
+      const jobDate = new Date(job.created_at).toISOString().slice(0, 10);
+      if (jobDate < dateFilter) return false;
+    }
+    return true;
+  });
+
+  const agentCount = jobs.filter(j => j.added_by === 'agent').length;
+  const userCount = jobs.filter(j => j.added_by === 'user').length;
+
   if (loading) {
     return (
       <div className="flex justify-center items-center py-16">
@@ -109,28 +127,97 @@ export function JobList() {
   }
 
   return (
-    <div className="max-w-3xl mx-auto">
+    <div className="max-w-3xl mx-auto space-y-4">
+      {/* Filters */}
+      <div className="card p-4">
+        <div className="flex flex-wrap items-center gap-4">
+          <div className="flex items-center gap-2 text-sm">
+            <Filter className="w-4 h-4 text-[var(--color-muted)]" />
+            <span className="text-[var(--color-muted)]">Filter:</span>
+          </div>
+
+          <div className="flex items-center gap-1 bg-[var(--color-bg)] rounded-lg p-0.5 border border-[var(--color-border)]">
+            {[
+              { value: 'all', label: `All (${jobs.length})` },
+              { value: 'agent', label: `Agent (${agentCount})`, icon: Bot },
+              { value: 'user', label: `Manual (${userCount})`, icon: User },
+            ].map(opt => (
+              <button
+                key={opt.value}
+                onClick={() => setSourceFilter(opt.value)}
+                className={`text-xs px-3 py-1.5 rounded-md transition-colors flex items-center gap-1 ${
+                  sourceFilter === opt.value
+                    ? 'bg-[var(--color-surface)] text-[var(--color-text)] shadow-sm font-medium'
+                    : 'text-[var(--color-muted)] hover:text-[var(--color-text)]'
+                }`}
+              >
+                {opt.icon && <opt.icon className="w-3 h-3" />}
+                {opt.label}
+              </button>
+            ))}
+          </div>
+
+          <div className="flex items-center gap-2">
+            <label className="text-xs text-[var(--color-muted)]">Since:</label>
+            <input
+              type="date"
+              value={dateFilter}
+              onChange={e => setDateFilter(e.target.value)}
+              className="input text-xs py-1 w-auto"
+            />
+            {dateFilter && (
+              <button onClick={() => setDateFilter('')} className="text-xs text-[var(--color-muted)] hover:text-[var(--color-text)]">
+                Clear
+              </button>
+            )}
+          </div>
+
+          <button onClick={loadJobs} className="btn-secondary text-xs py-1.5 ml-auto">
+            Refresh
+          </button>
+        </div>
+      </div>
+
+      {/* Job List */}
       <div className="card overflow-hidden">
         <div className="card-header flex items-center justify-between">
           <span>Applications</span>
-          <span className="text-sm font-normal text-[var(--color-muted)]">{jobs.length} jobs</span>
+          <span className="text-sm font-normal text-[var(--color-muted)]">{filteredJobs.length} jobs</span>
         </div>
 
         <div className="divide-y divide-[var(--color-border)]">
-          {jobs.length === 0 ? (
+          {filteredJobs.length === 0 ? (
             <p className="p-8 text-center text-sm text-[var(--color-muted)]">
-              No jobs yet. Search or upload a JD to get started.
+              {jobs.length === 0
+                ? 'No jobs yet. Search or upload a JD to get started.'
+                : 'No jobs match current filters.'}
             </p>
           ) : (
-            jobs.map((job) => (
+            filteredJobs.map((job) => (
               <div key={job.id} className="p-4 hover:bg-[var(--color-bg)]/80 transition-colors">
                 <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                   <div className="min-w-0 flex-1">
-                    <h3 className="font-medium text-[var(--color-text)] truncate">{job.title}</h3>
+                    <div className="flex items-center gap-2">
+                      <h3 className="font-medium text-[var(--color-text)] truncate">{job.title}</h3>
+                      {job.relevance_score != null && (
+                        <span className={`text-xs font-semibold px-1.5 py-0.5 rounded ${
+                          job.relevance_score >= 90 ? 'bg-green-100 text-green-700' :
+                          job.relevance_score >= 80 ? 'bg-sky-100 text-sky-700' :
+                          'bg-gray-100 text-gray-600'
+                        }`}>
+                          {job.relevance_score}%
+                        </span>
+                      )}
+                    </div>
                     <p className="text-sm text-[var(--color-muted)]">
                       {job.company}{job.location ? ` · ${job.location}` : ''}
                       {job.added_by === 'agent' && (
-                        <span className="ml-2 text-xs font-medium text-[var(--color-accent)]">agent</span>
+                        <span className="ml-2 inline-flex items-center gap-0.5 text-xs font-medium text-[var(--color-accent)]">
+                          <Bot className="w-3 h-3" /> agent
+                        </span>
+                      )}
+                      {job.source && (
+                        <span className="ml-2 text-xs text-[var(--color-muted)]">via {job.source}</span>
                       )}
                     </p>
                     <div className="mt-2 flex flex-wrap items-center gap-2">
@@ -151,6 +238,9 @@ export function JobList() {
                         <option value="offered">Offered</option>
                         <option value="rejected">Rejected</option>
                       </select>
+                      <span className="text-xs text-[var(--color-muted)]">
+                        {new Date(job.created_at).toLocaleDateString()}
+                      </span>
                     </div>
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
@@ -174,18 +264,26 @@ export function JobList() {
       </div>
 
       {/* Detail Modal */}
-      <Modal 
-        isOpen={isModalOpen} 
-        onClose={() => {
-          setIsModalOpen(false);
-          setSelected(null);
-        }}
+      <Modal
+        isOpen={isModalOpen}
+        onClose={() => { setIsModalOpen(false); setSelected(null); }}
         title="Job Details"
       >
         {selected && (
           <div className="space-y-6">
             <div>
-              <h3 className="text-xl font-bold text-[var(--color-text)]">{selected.title}</h3>
+              <div className="flex items-center gap-3">
+                <h3 className="text-xl font-bold text-[var(--color-text)]">{selected.title}</h3>
+                {selected.relevance_score != null && (
+                  <span className={`text-sm font-semibold px-2 py-0.5 rounded ${
+                    selected.relevance_score >= 90 ? 'bg-green-100 text-green-700' :
+                    selected.relevance_score >= 80 ? 'bg-sky-100 text-sky-700' :
+                    'bg-gray-100 text-gray-600'
+                  }`}>
+                    {selected.relevance_score}% match
+                  </span>
+                )}
+              </div>
               <div className="mt-2 flex flex-wrap gap-4 text-sm text-[var(--color-muted)]">
                 <div className="flex items-center gap-1.5">
                   <Building2 className="w-4 h-4" />
@@ -200,13 +298,21 @@ export function JobList() {
                 <div className={`badge ${badgeColor(selected.status)}`}>
                   <span className="capitalize">{selected.status.replace('_', ' ')}</span>
                 </div>
+                {selected.added_by === 'agent' && (
+                  <span className="inline-flex items-center gap-1 text-xs font-medium text-[var(--color-accent)]">
+                    <Bot className="w-3.5 h-3.5" /> Found by agent
+                  </span>
+                )}
+                {selected.source && (
+                  <span className="text-xs">Source: {selected.source}</span>
+                )}
               </div>
             </div>
 
             {selected.description && (
               <div>
                 <h4 className="text-sm font-semibold uppercase tracking-wider text-[var(--color-muted)] mb-2">Job Description</h4>
-                <div className="bg-[var(--color-bg)] rounded-lg p-4 border border-[var(--color-border)]">
+                <div className="bg-[var(--color-bg)] rounded-lg p-4 border border-[var(--color-border)] max-h-64 overflow-y-auto">
                   <p className="text-sm text-[var(--color-text)] whitespace-pre-wrap leading-relaxed">
                     {selected.description}
                   </p>
@@ -236,10 +342,10 @@ export function JobList() {
 
             {selected.url && (
               <div className="pt-4 border-t border-[var(--color-border)]">
-                <a 
-                  href={selected.url} 
-                  target="_blank" 
-                  rel="noopener noreferrer" 
+                <a
+                  href={selected.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
                   className="btn-primary w-full py-3 text-base"
                 >
                   <ExternalLink className="w-5 h-5" /> View Original Posting
@@ -252,4 +358,3 @@ export function JobList() {
     </div>
   );
 }
-

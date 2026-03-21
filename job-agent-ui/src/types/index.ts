@@ -107,6 +107,24 @@ export interface ProfileFormData {
   skills: { value: string }[];
 }
 
+export interface AgentRun {
+  id: string;
+  user_id: string;
+  started_at: string;
+  finished_at: string | null;
+  status: 'running' | 'completed' | 'failed';
+  jobs_found: number;
+  jobs_stored: number;
+  error: string | null;
+}
+
+export interface AgentStatus {
+  running: boolean;
+  interval_minutes: number;
+  relevance_threshold: number;
+  last_run: AgentRun | null;
+}
+
 export interface CriteriaFormData {
   keywords: string;
   locations: string;

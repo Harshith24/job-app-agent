@@ -33,6 +33,10 @@ class AppConfig:
     max_retries: int = int(os.getenv('MAX_RETRIES', '3'))
     request_timeout: int = int(os.getenv('REQUEST_TIMEOUT', '120'))
 
+    # Agent settings
+    relevance_threshold: int = int(os.getenv('RELEVANCE_THRESHOLD', '80'))
+    agent_interval_minutes: int = int(os.getenv('AGENT_INTERVAL_MINUTES', '60'))
+
     # Supabase
     supabase_url: str = os.getenv('SUPABASE_URL', '')
     supabase_anon_key: str = os.getenv('SUPABASE_ANON_KEY', '')

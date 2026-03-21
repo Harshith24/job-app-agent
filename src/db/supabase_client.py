@@ -159,3 +159,91 @@ def upsert_job(user_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
         .execute()
     )
     return _first_or_none(result) or {}
+
+
+def job_exists(user_id: str, title: str, company: str, url: str) -> bool:
+    """Check whether this exact job already exists for the user."""
+    result = (
+        get_service_client()
+        .table("jobs")
+        .select("id")
+        .eq("user_id", user_id)
+        .eq("title", title)
+        .eq("company", company)
+        .eq("url", url or "")
+        .limit(1)
+        .execute()
+    )
+    return bool(result.data)
+
+
+def get_jobs_filtered(
+    user_id: str,
+    added_by: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    limit: int = 200,
+) -> List[Dict[str, Any]]:
+    """Fetch jobs with optional filters."""
+    q = (
+        get_service_client()
+        .table("jobs")
+        .select("*")
+        .eq("user_id", user_id)
+        .order("created_at", desc=True)
+        .limit(limit)
+    )
+    if added_by:
+        q = q.eq("added_by", added_by)
+    if date_from:
+        q = q.gte("created_at", date_from)
+    if date_to:
+        q = q.lte("created_at", date_to)
+    return q.execute().data or []
+
+
+# ── Agent Runs ────────────────────────────────────────────────
+
+def insert_agent_run(user_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
+    data["user_id"] = user_id
+    try:
+        result = (
+            get_service_client()
+            .table("agent_runs")
+            .insert(data)
+            .execute()
+        )
+        return _first_or_none(result) or {}
+    except Exception as e:
+        logger.warning(f"insert_agent_run failed (table may not exist): {e}")
+        return {}
+
+
+def get_latest_agent_run(user_id: str) -> Optional[Dict[str, Any]]:
+    try:
+        result = (
+            get_service_client()
+            .table("agent_runs")
+            .select("*")
+            .eq("user_id", user_id)
+            .order("started_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        return _first_or_none(result)
+    except Exception as e:
+        logger.warning(f"get_latest_agent_run failed (table may not exist): {e}")
+        return None
+
+
+# ── Users with criteria (for background agent) ───────────────
+
+def get_all_users_with_criteria() -> List[Dict[str, Any]]:
+    """Return all search_criteria rows (one per user)."""
+    result = (
+        get_service_client()
+        .table("search_criteria")
+        .select("*")
+        .execute()
+    )
+    return result.data or []

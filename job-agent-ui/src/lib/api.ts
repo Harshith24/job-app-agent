@@ -7,6 +7,7 @@ import {
   HealthStatus,
   GenerateFromJDRequest,
   GenerateFromJDResponse,
+  AgentStatus,
 } from '@/types';
 
 axios.defaults.baseURL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api';
@@ -69,6 +70,24 @@ export class ApiClient {
   // Search
   async searchJobs(): Promise<{ message: string; count: number }> {
     return (await axios.post<{ message: string; count: number }>('/search')).data;
+  }
+
+  // Agent control
+  async agentStart(): Promise<{ message: string; running: boolean }> {
+    return (await axios.post('/agent/start')).data;
+  }
+
+  async agentStop(): Promise<{ message: string; running: boolean }> {
+    return (await axios.post('/agent/stop')).data;
+  }
+
+  async agentStatus(): Promise<AgentStatus> {
+    return (await axios.get<AgentStatus>('/agent/status')).data;
+  }
+
+  // Filtered jobs
+  async getJobsFiltered(params?: { added_by?: string; date_from?: string; date_to?: string }): Promise<{ jobs: JobRow[] }> {
+    return (await axios.get<{ jobs: JobRow[] }>('/jobs/filtered', { params })).data;
   }
 
   // Generate from JD
