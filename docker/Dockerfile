@@ -37,7 +37,7 @@ USER jobagent
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "from src.config.settings import config; from src.core.agent import JobSearchAgent; agent = JobSearchAgent(); exit(0 if agent.health_check()['overall'] else 1)"
+    CMD python -c "from src.agent import health_check; exit(0 if health_check()['overall'] else 1)"
 
 # Default command
 CMD ["python", "-m", "src.main", "--schedule", "07:00"]
